@@ -6,19 +6,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/pipe-cd/pipecd/pkg/app/pipedv1/plugin/opentofu/config"
 	"github.com/pipe-cd/pipecd/pkg/app/pipedv1/plugin/opentofu/toolregistry"
-
 	"github.com/pipe-cd/pipecd/pkg/plugin/sdk"
 	"go.uber.org/zap"
 )
 
 const (
-	stageOpenTofuPlan     = "OPEN_TOFU_PLAN"
-	stageOpenTofuApply    = "OPEN_TOFU_APPLY"
-	stageOpenTofuRollback = "OPEN_TOFU_ROLLBACK"
+	stageOpenTofuPlan  = "OPEN_TOFU_PLAN"
+	stageOpenTofuApply = "OPEN_TOFU_APPLY"
 )
 
 func determineVersions(input *sdk.DetermineVersionsInput[config.OpenTofuApplicationSpec]) (*sdk.DetermineVersionsResponse, error) {
@@ -57,21 +54,17 @@ func determineStrategy() (*sdk.DetermineStrategyResponse, error) {
 func buildQuickSyncStages() (*sdk.BuildQuickSyncStagesResponse, error) {
 	stages := []sdk.QuickSyncStage{
 		{
-			Name:        stageOpenTofuPlan,
-			Description: "Plan OpenTofu changes",
-			Rollback:    false,
-			Metadata: map[string]string{
-				"command": "plan",
-			},
+			Name:               stageOpenTofuPlan,
+			Description:        "Plan OpenTofu changes",
+			Rollback:           false,
+			Metadata:           map[string]string{"command": "plan"},
 			AvailableOperation: sdk.ManualOperationNone,
 		},
 		{
-			Name:        stageOpenTofuApply,
-			Description: "Apply OpenTofu changes",
-			Rollback:    false,
-			Metadata: map[string]string{
-				"command": "apply",
-			},
+			Name:               stageOpenTofuApply,
+			Description:        "Apply OpenTofu changes",
+			Rollback:           false,
+			Metadata:           map[string]string{"command": "apply"},
 			AvailableOperation: sdk.ManualOperationNone,
 		},
 	}
@@ -93,16 +86,6 @@ func buildPipelineSyncStages(input *sdk.BuildPipelineSyncStagesInput) (*sdk.Buil
 		})
 	}
 
-	if input.Request.Rollback {
-		stages = append(stages, sdk.PipelineStage{
-			Index:              len(input.Request.Stages),
-			Name:               stageOpenTofuRollback,
-			Rollback:           true,
-			Metadata:           map[string]string{},
-			AvailableOperation: sdk.ManualOperationNone,
-		})
-	}
-
 	return &sdk.BuildPipelineSyncStagesResponse{
 		Stages: stages,
 	}, nil
@@ -112,40 +95,61 @@ func fetchDefinedStages() []string {
 	return []string{
 		stageOpenTofuPlan,
 		stageOpenTofuApply,
-		stageOpenTofuRollback,
 	}
 }
 
-func (p *Plugin) executeStage(
-	input *sdk.ExecuteStageInput[config.OpenTofuApplicationSpec],
-	spec *config.OpenTofuApplicationSpec,
-) (sdk.StageStatus, error) {
+func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplicationSpec], appCfg *config.OpenTofuApplicationSpec) (sdk.StageStatus, error) {
 	logger := input.Logger
 
 	// Get the OpenTofu binary path from the tool registry
 	toolRegistry := toolregistry.NewRegistry(input.Client.ToolRegistry())
-	tofuPath, err := toolRegistry.OpenTofu(context.Background(), spec.Input.Version)
+	tofuPath, err := toolRegistry.OpenTofu(context.Background(), appCfg.Input.Version)
 	if err != nil {
 		logger.Error("failed to get OpenTofu binary", zap.Error(err))
 		return sdk.StageStatusFailure, fmt.Errorf("failed to get OpenTofu binary: %w", err)
 	}
 
+	// Check if configuration file exists
+	configPath := filepath.Join(appCfg.Input.WorkingDir, appCfg.Input.Config)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return sdk.StageStatusFailure, fmt.Errorf("configuration file %s does not exist", configPath)
+	}
+
+	// Always run init to ensure proper dependency initialization
+	output, err := p.runTofuCommand(tofuPath, "init", appCfg)
+	if err != nil {
+		logger.Error("failed to execute OpenTofu init",
+			zap.Error(err),
+			zap.String("output", output),
+		)
+		return sdk.StageStatusFailure, fmt.Errorf("failed to execute OpenTofu init: %w", err)
+	}
+
 	// Determine the command based on the stage name
 	var command string
+	var args []string
 	switch input.Request.StageName {
 	case stageOpenTofuPlan:
+		// Use a unique plan file name based on deployment ID
+		planFile := fmt.Sprintf("tfplan-%s", input.Request.Deployment.ApplicationID)
 		command = "plan"
+		args = []string{"-out=" + planFile}
 	case stageOpenTofuApply:
+		// Use the same plan file name as generated in plan stage
+		planFile := fmt.Sprintf("tfplan-%s", input.Request.Deployment.ApplicationID)
+		// Check if plan file exists
+		if _, err := os.Stat(filepath.Join(appCfg.Input.WorkingDir, planFile)); os.IsNotExist(err) {
+			return sdk.StageStatusFailure, fmt.Errorf("plan file %s does not exist, run plan first", planFile)
+		}
 		command = "apply"
-	case stageOpenTofuRollback:
-		command = "rollback"
+		args = []string{planFile}
 	default:
 		logger.Error("unknown stage", zap.String("stage", input.Request.StageName))
 		return sdk.StageStatusFailure, fmt.Errorf("unknown stage: %s", input.Request.StageName)
 	}
 
 	// Execute the OpenTofu command
-	output, err := p.runTofuCommand(tofuPath, command, spec)
+	output, err = p.runTofuCommand(tofuPath, command, appCfg, args...)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu command",
 			zap.String("command", command),
@@ -165,55 +169,25 @@ func (p *Plugin) executeStage(
 }
 
 // runTofuCommand executes the tofu command for the given stage.
-func (p *Plugin) runTofuCommand(tofuPath, command string, spec *config.OpenTofuApplicationSpec) (string, error) {
-	// Create a new command
-	args := []string{command}
-
-	// Add common options
-	if spec.Input.Config != "" {
-		args = append(args, "--config", spec.Input.Config)
-	}
-
-	// Add command-specific options
-	switch command {
-	case "plan":
-		args = append(args, "-out=tfplan")
-	case "apply":
-		args = append(args, "tfplan")
-	case "rollback":
-		// For rollback, we'll use the previous state
-		args = append(args, "-state=previous.tfstate")
-	}
-
-	// Create the command
-	cmd := exec.Command(tofuPath, args...)
-
-	// Set working directory if specified
-	if spec.Input.WorkingDir != "" {
-		// Convert to absolute path if it's relative
-		workingDir, err := filepath.Abs(spec.Input.WorkingDir)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve working directory path: %w", err)
-		}
-		cmd.Dir = workingDir
-	}
+func (p *Plugin) runTofuCommand(tofuPath, command string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
+	// Put command first, then args
+	cmd := exec.Command(tofuPath, append([]string{command}, args...)...)
 
 	// Set environment variables if specified
 	if len(spec.Input.Env) > 0 {
-		cmd.Env = append(os.Environ(), spec.Input.Env...)
+		cmd.Env = append(cmd.Env, spec.Input.Env...)
 	}
 
-	// Capture both stdout and stderr
+	// Set working directory if specified
+	if spec.Input.WorkingDir != "" {
+		cmd.Dir = spec.Input.WorkingDir
+	}
+
+	// Execute the command and capture output
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(output), fmt.Errorf("failed to execute tofu command: %s, output: %s", err.Error(), string(output))
+		return string(output), fmt.Errorf("failed to execute tofu command: %w", err)
 	}
 
-	// Check for common error patterns in the output
-	outputStr := string(output)
-	if strings.Contains(outputStr, "Error:") {
-		return outputStr, fmt.Errorf("OpenTofu command failed: %s", outputStr)
-	}
-
-	return outputStr, nil
+	return string(output), nil
 }

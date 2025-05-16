@@ -12,6 +12,11 @@ import (
 // Plugin implements the sdk.DeploymentPlugin interface.
 type Plugin struct{}
 
+// NewPlugin creates a new OpenTofu plugin.
+func NewPlugin() *Plugin {
+	return &Plugin{}
+}
+
 // Ensure the Plugin implements the DeploymentPlugin interface.
 var _ sdk.DeploymentPlugin[sdk.ConfigNone, config.OpenTofuDeployTargetConfig, config.OpenTofuApplicationSpec] = (*Plugin)(nil)
 
@@ -63,3 +68,4 @@ func (p *Plugin) ExecuteStage(
 		Status: status,
 	}, nil
 }
+

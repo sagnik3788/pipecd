@@ -26,7 +26,8 @@ type OpenTofuDeploymentInput struct {
 	// WorkingDir is the working directory for OpenTofu commands
 	WorkingDir string `json:"workingDir"`
 	// Env is a list of environment variables to set for OpenTofu commands
-	Env []string `json:"env"`
+	Env  []string `json:"env"`
+	Init bool     `json:"init"`
 }
 
 // Options for quick sync stage

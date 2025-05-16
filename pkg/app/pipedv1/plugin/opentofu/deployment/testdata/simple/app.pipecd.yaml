@@ -1,0 +1,9 @@
+apiVersion: pipecd.dev/v1beta1
+kind: OpenTofuApp
+spec:
+  input:
+    version: "1.6.0"
+    config: "main.tf"
+    workingDir: "."
+    env:
+      - TF_VAR_environment=test
