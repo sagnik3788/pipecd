@@ -11,7 +11,7 @@ func main() {
 	plugin, err := sdk.NewPlugin(
 		"opentofu", "v1.0.0",
 		sdk.WithDeploymentPlugin(&deployment.Plugin{}),
-		// TODO: Add livestate plugin
+		// will add livestate plugin
 	)
 	if err != nil {
 		log.Fatal(err)

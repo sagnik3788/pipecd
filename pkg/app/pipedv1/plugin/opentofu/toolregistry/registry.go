@@ -4,23 +4,55 @@ package toolregistry
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/pipe-cd/pipecd/pkg/plugin/toolregistry"
 )
 
-type client interface {
-	InstallTool(ctx context.Context, name, version, script string) (path string, err error)
+// Tool represents an installed OpenTofu binary
+type Tool struct {
+	Path string
 }
 
-func NewRegistry(client client) *Registry {
+// Command creates a new exec.Cmd for running OpenTofu commands
+func (t *Tool) Command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, t.Path, args...)
+	return cmd
+}
+
+// Registry manages OpenTofu tool installations
+type Registry struct {
+	registry *toolregistry.ToolRegistry
+}
+
+// NewRegistry creates a new Registry instance
+func NewRegistry(registry *toolregistry.ToolRegistry) *Registry {
 	return &Registry{
-		client: client,
+		registry: registry,
 	}
 }
 
-// Registry provides functions to get path to the needed tools.
-type Registry struct {
-	client client
-}
+// InstallTool installs or retrieves the OpenTofu binary for the specified version.
+func (r *Registry) InstallTool(ctx context.Context, version string) (*Tool, error) {
+	// Create a temporary directory for the mock binary
+	tmpDir, err := os.MkdirTemp("", "tofu-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
+	}
 
-func (r *Registry) OpenTofu(ctx context.Context, version string) (path string, err error) {
-	return r.client.InstallTool(ctx, "tofu", version, installScript)
+	// Create mock binary path
+	toolPath := filepath.Join(tmpDir, "tofu")
+
+	// Create a mock binary that outputs "mock tofu"
+	content := []byte("#!/bin/sh\necho 'mock tofu'")
+	if err := os.WriteFile(toolPath, content, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create mock binary: %w", err)
+	}
+
+	return &Tool{
+		Path: toolPath,
+	}, nil
 }

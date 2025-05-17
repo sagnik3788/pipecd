@@ -3,7 +3,6 @@ package config
 // OpenTofuDeployTargetConfig represents PipedDeployTarget.Config for opentofu plugin.
 type OpenTofuDeployTargetConfig struct {
 	Version string `json:"version"` // e.g. "1.6.0"
-	// You can add backend, init flags etc. later
 }
 
 // OpenTofuApplicationSpec defines app configuration for OpenTofu deployment.

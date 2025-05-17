@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/pipe-cd/pipecd/pkg/app/pipedv1/plugin/opentofu/config"
@@ -103,7 +102,7 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 
 	// Get the OpenTofu binary path from the tool registry
 	toolRegistry := toolregistry.NewRegistry(input.Client.ToolRegistry())
-	tofuPath, err := toolRegistry.OpenTofu(context.Background(), appCfg.Input.Version)
+	tool, err := toolRegistry.InstallTool(context.Background(), appCfg.Input.Version)
 	if err != nil {
 		logger.Error("failed to get OpenTofu binary", zap.Error(err))
 		return sdk.StageStatusFailure, fmt.Errorf("failed to get OpenTofu binary: %w", err)
@@ -116,7 +115,7 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 	}
 
 	// Always run init to ensure proper dependency initialization
-	output, err := p.runTofuCommand(tofuPath, "init", appCfg)
+	output, err := p.runTofuCommand(tool, "init", appCfg)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu init",
 			zap.Error(err),
@@ -149,7 +148,7 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 	}
 
 	// Execute the OpenTofu command
-	output, err = p.runTofuCommand(tofuPath, command, appCfg, args...)
+	output, err = p.runTofuCommand(tool, command, appCfg, args...)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu command",
 			zap.String("command", command),
@@ -169,9 +168,9 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 }
 
 // runTofuCommand executes the tofu command for the given stage.
-func (p *Plugin) runTofuCommand(tofuPath, command string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
-	// Put command first, then args
-	cmd := exec.Command(tofuPath, append([]string{command}, args...)...)
+func (p *Plugin) runTofuCommand(tool *toolregistry.Tool, command string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
+	// Create command with context
+	cmd := tool.Command(context.Background(), append([]string{command}, args...)...)
 
 	// Set environment variables if specified
 	if len(spec.Input.Env) > 0 {

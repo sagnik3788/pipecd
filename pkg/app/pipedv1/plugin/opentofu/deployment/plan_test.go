@@ -14,6 +14,8 @@ import (
 	"github.com/pipe-cd/pipecd/pkg/plugin/toolregistry/toolregistrytest"
 )
 
+// TestBuildQuickSyncStages verifies that the quick sync stages are built correctly.
+// It checks if the stages include both plan and apply stages with correct metadata and configurations.
 func TestBuildQuickSyncStages(t *testing.T) {
 	t.Parallel()
 
@@ -52,6 +54,8 @@ func TestBuildQuickSyncStages(t *testing.T) {
 	}
 }
 
+// TestBuildPipelineSyncStages verifies that pipeline sync stages are built correctly.
+// It tests the creation of pipeline stages with proper indexing, names, and rollback configurations.
 func TestBuildPipelineSyncStages(t *testing.T) {
 	t.Parallel()
 
@@ -108,6 +112,8 @@ func TestBuildPipelineSyncStages(t *testing.T) {
 	}
 }
 
+// TestDetermineVersions verifies the version determination logic for OpenTofu deployments.
+// It tests both scenarios: with and without commit hash, ensuring correct version string generation.
 func TestDetermineVersions(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +175,8 @@ func TestDetermineVersions(t *testing.T) {
 	}
 }
 
+// TestDetermineStrategy verifies that the deployment strategy is correctly determined.
+// It ensures that QUICK_SYNC strategy is used by default for OpenTofu deployments.
 func TestDetermineStrategy(t *testing.T) {
 	t.Parallel()
 
@@ -178,6 +186,8 @@ func TestDetermineStrategy(t *testing.T) {
 	assert.Equal(t, "Using QUICK_SYNC strategy for OpenTofu deployment", actual.Summary)
 }
 
+// TestFetchDefinedStages verifies that all defined stages are correctly fetched.
+// It ensures that both plan and apply stages are included in the returned list.
 func TestFetchDefinedStages(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +199,9 @@ func TestFetchDefinedStages(t *testing.T) {
 	assert.Equal(t, expected, actual)
 }
 
+// TestPlugin_executeOpenTofuPlanStage tests the execution of the OpenTofu plan stage.
+// It verifies that the plan stage executes successfully with valid configuration,
+// including proper initialization, environment variable handling, and command execution.
 func TestPlugin_executeOpenTofuPlanStage(t *testing.T) {
 	t.Parallel()
 
@@ -240,6 +253,9 @@ func TestPlugin_executeOpenTofuPlanStage(t *testing.T) {
 	assert.Equal(t, sdk.StageStatusSuccess, status)
 }
 
+// TestPlugin_executeOpenTofuPlanStage_withInvalidConfig tests the plan stage execution with invalid configuration.
+// It verifies that the stage fails appropriately when provided with non-existent configuration files
+// and returns the correct error status.
 func TestPlugin_executeOpenTofuPlanStage_withInvalidConfig(t *testing.T) {
 	t.Parallel()
 

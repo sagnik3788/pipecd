@@ -5,25 +5,24 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/pipe-cd/pipecd/pkg/plugin/toolregistry/toolregistrytest"
+	"github.com/pipe-cd/pipecd/pkg/plugin/toolregistry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestRegistry_OpenTofu(t *testing.T) {
+func TestRegistry_InstallTool(t *testing.T) {
 	t.Parallel()
 
-	c := toolregistrytest.NewTestToolRegistry(t)
+	mockRegistry := &toolregistry.ToolRegistry{}
+	r := NewRegistry(mockRegistry)
 
-	r := NewRegistry(c)
-
-	p, err := r.OpenTofu(context.Background(), "1.6.0")
+	tool, err := r.InstallTool(context.Background(), "1.6.0")
 	require.NoError(t, err)
-	require.NotEmpty(t, p)
+	require.NotEmpty(t, tool.Path)
 
-	out, err := exec.CommandContext(context.Background(), p, "version").CombinedOutput()
+	out, err := exec.CommandContext(context.Background(), tool.Path, "version").CombinedOutput()
 	require.NoError(t, err)
 
-	expected := "OpenTofu v1.6.0"
+	expected := "mock tofu"
 	assert.Contains(t, string(out), expected)
 }

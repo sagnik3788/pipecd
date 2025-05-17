@@ -13,6 +13,10 @@ import (
 	"github.com/pipe-cd/pipecd/pkg/plugin/toolregistry/toolregistrytest"
 )
 
+// TestPlugin_executeOpenTofuApplyStage tests the complete OpenTofu apply workflow.
+// It first executes a plan stage to generate the plan file, then verifies that the apply stage
+// executes successfully using the generated plan. The test ensures proper handling of
+// configuration, environment variables, and command execution for both stages.
 func TestPlugin_executeOpenTofuApplyStage(t *testing.T) {
 	t.Parallel()
 
@@ -91,6 +95,9 @@ func TestPlugin_executeOpenTofuApplyStage(t *testing.T) {
 	assert.Equal(t, sdk.StageStatusSuccess, status)
 }
 
+// TestPlugin_executeOpenTofuApplyStage_withInvalidConfig tests the apply stage execution with invalid configuration.
+// It verifies that the stage fails appropriately when provided with non-existent configuration files
+// and returns the correct error status. This test ensures proper error handling for invalid configurations.
 func TestPlugin_executeOpenTofuApplyStage_withInvalidConfig(t *testing.T) {
 	t.Parallel()
 
