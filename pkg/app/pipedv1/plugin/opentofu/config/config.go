@@ -12,21 +12,16 @@ type OpenTofuApplicationSpec struct {
 }
 
 func (s *OpenTofuApplicationSpec) Validate() error {
-	// Add validations here if needed
 	return nil
 }
 
 // OpenTofuDeploymentInput is the input for OpenTofu stages.
 type OpenTofuDeploymentInput struct {
-	// Version is the version of OpenTofu to use. e.g. "1.6.0"
-	Version string `json:"version"`
-	// Config is the path to the OpenTofu config file
-	Config string `json:"config"`
-	// WorkingDir is the working directory for OpenTofu commands
-	WorkingDir string `json:"workingDir"`
-	// Env is a list of environment variables to set for OpenTofu commands
-	Env  []string `json:"env"`
-	Init bool     `json:"init"`
+	Version    string   `json:"version"`
+	Config     string   `json:"config"`
+	WorkingDir string   `json:"workingDir"`
+	Env        []string `json:"env"`
+	Init       bool     `json:"init"`
 }
 
 // Options for quick sync stage

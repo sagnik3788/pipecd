@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 
+	"github.com/pipe-cd/pipecd/pkg/app/pipedv1/plugin/opentofu/config"
 	"github.com/pipe-cd/pipecd/pkg/app/pipedv1/plugin/opentofu/toolregistry"
-	"github.com/pipe-cd/pipecd/pkg/model"
+	"github.com/pipe-cd/pipecd/pkg/plugin/sdk"
 )
 
 // State represents the OpenTofu state structure
@@ -20,6 +21,33 @@ type State struct {
 			Outputs   []Output   `json:"outputs"`
 		} `json:"root_module"`
 	} `json:"values"`
+}
+
+// Plan represents the OpenTofu plan structure
+type Plan struct {
+	PlannedValues struct {
+		RootModule struct {
+			Resources []Resource `json:"resources"`
+			Outputs   []Output   `json:"outputs"`
+		} `json:"root_module"`
+	} `json:"planned_values"`
+	ResourceChanges []ResourceChange `json:"resource_changes"`
+}
+
+// ResourceChange represents a change in a resource
+type ResourceChange struct {
+	Address      string `json:"address"`
+	Change       Change `json:"change"`
+	Type         string `json:"type"`
+	Name         string `json:"name"`
+	ProviderName string `json:"provider_name"`
+}
+
+// Change represents the changes to be made to a resource
+type Change struct {
+	Actions []string               `json:"actions"`
+	Before  map[string]interface{} `json:"before"`
+	After   map[string]interface{} `json:"after"`
 }
 
 // Resource represents an OpenTofu resource
@@ -34,74 +62,36 @@ type Output struct {
 	Value interface{} `json:"value"`
 }
 
-// Result types for plugin responses
-type GetLiveStateResult struct {
-	State string
-}
+type Plugin struct{}
 
-type GetDesiredStateResult struct {
-	State string
-}
-
-type GetDiffResult struct {
-	Diff string
-}
-
-// Registry defines the interface for tool management
-type Registry interface {
-	InstallTool(ctx context.Context, version string) (*toolregistry.Tool, error)
-}
-
-type Plugin struct {
-	workingDir string
-	version    string
-	registry   Registry
-}
-
-func NewPlugin(workingDir, version string, registry Registry) *Plugin {
-	return &Plugin{
-		workingDir: workingDir,
-		version:    version,
-		registry:   registry,
-	}
-}
-
-func (p *Plugin) validateConfig(app *model.Application) error {
-	if app.GitPath == nil || app.GitPath.Path == "" {
-		return fmt.Errorf("git path is required")
+// GetLivestate implements sdk.LivestatePlugin.
+func (p Plugin) GetLivestate(ctx context.Context, _ *sdk.ConfigNone, deployTargets []*sdk.DeployTarget[config.OpenTofuDeployTargetConfig], input *sdk.GetLivestateInput[config.OpenTofuApplicationSpec]) (*sdk.GetLivestateResponse, error) {
+	if len(deployTargets) != 1 {
+		return nil, fmt.Errorf("only 1 deploy target is allowed but got %d", len(deployTargets))
 	}
 
-	configPath := filepath.Join(p.workingDir, app.Id, app.GitPath.Path)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return fmt.Errorf("configuration directory does not exist: %s", configPath)
-	}
+	deployTarget := deployTargets[0]
+	deployTargetConfig := deployTarget.Config
 
-	return nil
-}
-
-func (p *Plugin) validateState(state []byte) error {
-	var s State
-	if err := json.Unmarshal(state, &s); err != nil {
-		return fmt.Errorf("invalid state format: %w", err)
-	}
-	return nil
-}
-
-func (p *Plugin) GetLiveState(ctx context.Context, app *model.Application) (*GetLiveStateResult, error) {
-	if err := p.validateConfig(app); err != nil {
-		return nil, err
-	}
+	// Create tool registry
+	toolRegistry := toolregistry.NewRegistry(input.Client.ToolRegistry())
 
 	// Get OpenTofu binary
-	tool, err := p.registry.InstallTool(ctx, p.version)
+	tool, err := toolRegistry.InstallTool(ctx, deployTargetConfig.Version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenTofu binary: %w", err)
 	}
 
 	// Create working directory
-	workDir := filepath.Join(p.workingDir, app.Id)
+	workDir := filepath.Join(os.TempDir(), "opentofu-plugin", input.Request.ApplicationID)
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create working directory: %w", err)
+	}
+
+	// Copy OpenTofu configuration files from source to working directory
+	sourceDir := input.Request.DeploymentSource.ApplicationConfig.Spec.Input.Config
+	if err := copyDir(sourceDir, workDir); err != nil {
+		return nil, fmt.Errorf("failed to copy OpenTofu configuration files: %w", err)
 	}
 
 	// Initialize OpenTofu
@@ -111,7 +101,7 @@ func (p *Plugin) GetLiveState(ctx context.Context, app *model.Application) (*Get
 		return nil, fmt.Errorf("failed to initialize OpenTofu: %w", err)
 	}
 
-	// Get state
+	// Get live state
 	stateCmd := tool.Command(ctx, "show", "-json")
 	stateCmd.Dir = workDir
 	output, err := stateCmd.Output()
@@ -119,183 +109,133 @@ func (p *Plugin) GetLiveState(ctx context.Context, app *model.Application) (*Get
 		return nil, fmt.Errorf("failed to get OpenTofu state: %w", err)
 	}
 
-	// Validate state format
-	if err := p.validateState(output); err != nil {
-		return nil, err
+	// Parse live state
+	var liveState State
+	if err := json.Unmarshal(output, &liveState); err != nil {
+		return nil, fmt.Errorf("failed to parse live state: %w", err)
 	}
 
-	return &GetLiveStateResult{
-		State: string(output),
-	}, nil
-}
-
-func (p *Plugin) GetDesiredState(ctx context.Context, app *model.Application) (*GetDesiredStateResult, error) {
-	if err := p.validateConfig(app); err != nil {
-		return nil, err
-	}
-
-	// Get OpenTofu binary
-	tool, err := p.registry.InstallTool(ctx, p.version)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get OpenTofu binary: %w", err)
-	}
-
-	// Create working directory
-	workDir := filepath.Join(p.workingDir, app.Id)
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create working directory: %w", err)
-	}
-
-	// Initialize OpenTofu
-	initCmd := tool.Command(ctx, "init", "-input=false")
-	initCmd.Dir = workDir
-	if err := initCmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to initialize OpenTofu: %w", err)
-	}
-
-	// Get plan
-	planCmd := tool.Command(ctx, "plan", "-input=false", "-json")
+	// Get desired state (from plan)
+	planCmd := tool.Command(ctx, "plan", "-json")
 	planCmd.Dir = workDir
-	output, err := planCmd.Output()
+	planOutput, err := planCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenTofu plan: %w", err)
 	}
 
-	// Validate state format
-	if err := p.validateState(output); err != nil {
-		return nil, err
+	// Parse plan
+	var plan Plan
+	if err := json.Unmarshal(planOutput, &plan); err != nil {
+		return nil, fmt.Errorf("failed to parse plan: %w", err)
 	}
 
-	return &GetDesiredStateResult{
-		State: string(output),
-	}, nil
-}
+	// Compute diff between live and desired states
+	diff, reasons := computeDiff(liveState, plan)
 
-func (p *Plugin) GetDiff(ctx context.Context, app *model.Application) (*GetDiffResult, error) {
-	if err := p.validateConfig(app); err != nil {
-		return nil, err
-	}
-
-	tool, err := p.registry.InstallTool(ctx, p.version)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get OpenTofu binary: %w", err)
-	}
-
-	workDir := filepath.Join(p.workingDir, app.Id)
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create working directory: %w", err)
-	}
-
-	// Initialize OpenTofu
-	initCmd := tool.Command(ctx, "init", "-input=false")
-	initCmd.Dir = workDir
-	if err := initCmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to initialize OpenTofu: %w", err)
-	}
-
-	// 1. Get current state (implemented state)
-	stateCmd := tool.Command(ctx, "show", "-json")
-	stateCmd.Dir = workDir
-	currentState, err := stateCmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current state: %w", err)
-	}
-
-	// Validate current state
-	if err := p.validateState(currentState); err != nil {
-		return nil, fmt.Errorf("invalid current state: %w", err)
-	}
-
-	// 2. Get desired state (from plan)
-	planCmd := tool.Command(ctx, "plan", "-input=false", "-json")
-	planCmd.Dir = workDir
-	desiredState, err := planCmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get desired state: %w", err)
-	}
-
-	// Validate desired state
-	if err := p.validateState(desiredState); err != nil {
-		return nil, fmt.Errorf("invalid desired state: %w", err)
-	}
-
-	// 3. Compare states to get actual differences
-	var current, desired State
-	if err := json.Unmarshal(currentState, &current); err != nil {
-		return nil, fmt.Errorf("failed to parse current state: %w", err)
-	}
-	if err := json.Unmarshal(desiredState, &desired); err != nil {
-		return nil, fmt.Errorf("failed to parse desired state: %w", err)
-	}
-
-	// 4. Generate diff by comparing resources
-	diff := make(map[string]interface{})
-
-	// Compare resources and track changes
-	changes := []map[string]interface{}{}
-	for _, desiredRes := range desired.Values.RootModule.Resources {
-		// Find matching resource in current state
-		var currentRes *Resource
-		for _, currRes := range current.Values.RootModule.Resources {
-			if currRes.Address == desiredRes.Address {
-				currentRes = &currRes
+	// Convert live resources to ResourceState
+	resourceStates := make([]sdk.ResourceState, 0, len(liveState.Values.RootModule.Resources))
+	for _, res := range liveState.Values.RootModule.Resources {
+		// Find if this resource has changes
+		var healthStatus sdk.ResourceHealthStatus
+		var healthDesc string
+		for _, change := range plan.ResourceChanges {
+			if change.Address == res.Address {
+				if len(change.Change.Actions) > 0 {
+					healthStatus = sdk.ResourceHealthStatus(1) // Degraded
+					healthDesc = fmt.Sprintf("Resource will be %s", strings.Join(change.Change.Actions, ", "))
+				}
 				break
 			}
 		}
 
-		// If resource doesn't exist in current state, it's new
-		if currentRes == nil {
-			changes = append(changes, map[string]interface{}{
-				"address":  desiredRes.Address,
-				"change":   "create",
-				"resource": desiredRes,
-			})
-			continue
-		}
-
-		// Compare attributes to find changes
-		if !reflect.DeepEqual(currentRes.Values, desiredRes.Values) {
-			changes = append(changes, map[string]interface{}{
-				"address": desiredRes.Address,
-				"change":  "update",
-				"current": currentRes.Values,
-				"desired": desiredRes.Values,
-			})
-		}
+		resourceStates = append(resourceStates, sdk.ResourceState{
+			ID:                res.Address,
+			Name:              res.Address,
+			ResourceType:      res.Address,
+			ResourceMetadata:  map[string]string{"values": fmt.Sprintf("%v", res.Values)},
+			HealthStatus:      healthStatus,
+			HealthDescription: healthDesc,
+		})
 	}
 
-	// Check for resources to be deleted
-	for _, currentRes := range current.Values.RootModule.Resources {
-		// Check if resource exists in desired state
-		exists := false
-		for _, desiredRes := range desired.Values.RootModule.Resources {
-			if desiredRes.Address == currentRes.Address {
-				exists = true
-				break
-			}
-		}
-
-		// If resource doesn't exist in desired state, it should be deleted
-		if !exists {
-			changes = append(changes, map[string]interface{}{
-				"address":  currentRes.Address,
-				"change":   "delete",
-				"resource": currentRes,
-			})
-		}
+	// Determine sync status based on diff
+	syncStatus := sdk.ApplicationSyncStateSynced
+	shortReason := ""
+	reason := ""
+	if len(diff) > 0 {
+		syncStatus = sdk.ApplicationSyncStateOutOfSync
+		shortReason = fmt.Sprintf("%d resources need to be updated", len(diff))
+		reason = strings.Join(reasons, "\n")
 	}
 
-	diff["changes"] = changes
-
-	return &GetDiffResult{
-		Diff: string(mustMarshal(diff)),
+	return &sdk.GetLivestateResponse{
+		LiveState: sdk.ApplicationLiveState{
+			Resources:    resourceStates,
+			HealthStatus: sdk.ApplicationHealthStateUnknown,
+		},
+		SyncState: sdk.ApplicationSyncState{
+			Status:      syncStatus,
+			ShortReason: shortReason,
+			Reason:      reason,
+		},
 	}, nil
 }
 
-func mustMarshal(v interface{}) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
+// computeDiff returns a list of differences between live and desired states.
+func computeDiff(live State, plan Plan) ([]string, []string) {
+	var diffs []string
+	var reasons []string
+
+	// Create a map of live resources for quick lookup
+	liveResources := make(map[string]Resource)
+	for _, res := range live.Values.RootModule.Resources {
+		liveResources[res.Address] = res
 	}
-	return b
+
+	// Check for resource changes
+	for _, change := range plan.ResourceChanges {
+		if len(change.Change.Actions) > 0 {
+			diffs = append(diffs, change.Address)
+			reason := fmt.Sprintf("%s will be %s", change.Address, strings.Join(change.Change.Actions, ", "))
+			reasons = append(reasons, reason)
+		}
+	}
+
+	return diffs, reasons
+}
+
+// copyDir copies a directory recursively
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return err
+			}
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			// Skip copying if destination file exists
+			if _, err := os.Stat(dstPath); err == nil {
+				continue
+			}
+			// Copy file
+			content, err := os.ReadFile(srcPath)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dstPath, content, 0644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -3,7 +3,7 @@ terraform {
 }
 
 resource "null_resource" "test" {}
-
+ 
 variable "environment" {
   type = string
 } 
