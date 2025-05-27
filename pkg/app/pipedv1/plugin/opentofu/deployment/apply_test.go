@@ -14,9 +14,6 @@ import (
 )
 
 // TestPlugin_executeOpenTofuApplyStage tests the complete OpenTofu apply workflow.
-// It first executes a plan stage to generate the plan file, then verifies that the apply stage
-// executes successfully using the generated plan. The test ensures proper handling of
-// configuration, environment variables, and command execution for both stages.
 func TestPlugin_executeOpenTofuApplyStage(t *testing.T) {
 	t.Parallel()
 

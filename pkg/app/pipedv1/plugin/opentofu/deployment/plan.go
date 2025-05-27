@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/pipe-cd/pipecd/pkg/app/pipedv1/plugin/opentofu/config"
@@ -20,10 +21,6 @@ const (
 func determineVersions(input *sdk.DetermineVersionsInput[config.OpenTofuApplicationSpec]) (*sdk.DetermineVersionsResponse, error) {
 	// Extract version from the OpenTofu configuration
 	// For now, we'll use a simple versioning scheme
-	// In a real implementation, we might want to:
-	// 1. Parse the OpenTofu configuration files
-	// 2. Extract version information from provider versions
-	// 3. Hash the configuration files to create a unique version
 	version := "v1"
 	if input.Request.DeploymentSource.CommitHash != "" {
 		version = fmt.Sprintf("v1-%s", input.Request.DeploymentSource.CommitHash)
@@ -102,7 +99,7 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 
 	// Get the OpenTofu binary path from the tool registry
 	toolRegistry := toolregistry.NewRegistry(input.Client.ToolRegistry())
-	tool, err := toolRegistry.InstallTool(context.Background(), appCfg.Input.Version)
+	tofuPath, err := toolRegistry.OpenTofu(context.Background(), appCfg.Input.Version)
 	if err != nil {
 		logger.Error("failed to get OpenTofu binary", zap.Error(err))
 		return sdk.StageStatusFailure, fmt.Errorf("failed to get OpenTofu binary: %w", err)
@@ -115,7 +112,7 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 	}
 
 	// Always run init to ensure proper dependency initialization
-	output, err := p.runTofuCommand(tool, "init", appCfg)
+	output, err := p.runTofuCommand(tofuPath, "init", appCfg)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu init",
 			zap.Error(err),
@@ -148,7 +145,7 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 	}
 
 	// Execute the OpenTofu command
-	output, err = p.runTofuCommand(tool, command, appCfg, args...)
+	output, err = p.runTofuCommand(tofuPath, command, appCfg, args...)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu command",
 			zap.String("command", command),
@@ -168,9 +165,9 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 }
 
 // runTofuCommand executes the tofu command for the given stage.
-func (p *Plugin) runTofuCommand(tool *toolregistry.Tool, command string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
+func (p *Plugin) runTofuCommand(tofuPath string, command string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
 	// Create command with context
-	cmd := tool.Command(context.Background(), append([]string{command}, args...)...)
+	cmd := exec.CommandContext(context.Background(), tofuPath, append([]string{command}, args...)...)
 
 	// Set environment variables if specified
 	if len(spec.Input.Env) > 0 {

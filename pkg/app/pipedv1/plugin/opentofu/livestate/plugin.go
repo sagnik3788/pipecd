@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -77,7 +78,7 @@ func (p Plugin) GetLivestate(ctx context.Context, _ *sdk.ConfigNone, deployTarge
 	toolRegistry := toolregistry.NewRegistry(input.Client.ToolRegistry())
 
 	// Get OpenTofu binary
-	tool, err := toolRegistry.InstallTool(ctx, deployTargetConfig.Version)
+	tofuPath, err := toolRegistry.OpenTofu(ctx, deployTargetConfig.Version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenTofu binary: %w", err)
 	}
@@ -95,14 +96,14 @@ func (p Plugin) GetLivestate(ctx context.Context, _ *sdk.ConfigNone, deployTarge
 	}
 
 	// Initialize OpenTofu
-	initCmd := tool.Command(ctx, "init", "-input=false")
+	initCmd := exec.CommandContext(ctx, tofuPath, "init", "-input=false")
 	initCmd.Dir = workDir
 	if err := initCmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to initialize OpenTofu: %w", err)
 	}
 
 	// Get live state
-	stateCmd := tool.Command(ctx, "show", "-json")
+	stateCmd := exec.CommandContext(ctx, tofuPath, "show", "-json")
 	stateCmd.Dir = workDir
 	output, err := stateCmd.Output()
 	if err != nil {
@@ -116,7 +117,7 @@ func (p Plugin) GetLivestate(ctx context.Context, _ *sdk.ConfigNone, deployTarge
 	}
 
 	// Get desired state (from plan)
-	planCmd := tool.Command(ctx, "plan", "-json")
+	planCmd := exec.CommandContext(ctx, tofuPath, "plan", "-json")
 	planCmd.Dir = workDir
 	planOutput, err := planCmd.Output()
 	if err != nil {

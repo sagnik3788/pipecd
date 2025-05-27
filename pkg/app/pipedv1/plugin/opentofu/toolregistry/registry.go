@@ -1,58 +1,32 @@
-// Package toolregistry installs and manages the needed tools
-// such as tofu for executing tasks in pipeline.
 package toolregistry
 
 import (
+	"cmp"
 	"context"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-
-	"github.com/pipe-cd/pipecd/pkg/plugin/toolregistry"
 )
 
-// Tool represents an installed OpenTofu binary
-type Tool struct {
-	Path string
+const (
+	defaultOpenTofuVersion = "1.9.1"
+)
+
+type client interface {
+	InstallTool(ctx context.Context, name, version, script string) (string, error)
 }
 
-// Command creates a new exec.Cmd for running OpenTofu commands
-func (t *Tool) Command(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, t.Path, args...)
-	return cmd
-}
-
-// Registry manages OpenTofu tool installations
+// Registry provides functions to get path to the needed tools.
 type Registry struct {
-	registry *toolregistry.ToolRegistry
+	client client
 }
 
 // NewRegistry creates a new Registry instance
-func NewRegistry(registry *toolregistry.ToolRegistry) *Registry {
+func NewRegistry(client client) *Registry {
 	return &Registry{
-		registry: registry,
+		client: client,
 	}
 }
 
-// InstallTool installs or retrieves the OpenTofu binary for the specified version.
-func (r *Registry) InstallTool(ctx context.Context, version string) (*Tool, error) {
-	// Create a temporary directory for the mock binary
-	tmpDir, err := os.MkdirTemp("", "tofu-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir: %w", err)
-	}
-
-	// Create mock binary path
-	toolPath := filepath.Join(tmpDir, "tofu")
-
-	// Create a mock binary that outputs "mock tofu"
-	content := []byte("#!/bin/sh\necho 'mock tofu'")
-	if err := os.WriteFile(toolPath, content, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create mock binary: %w", err)
-	}
-
-	return &Tool{
-		Path: toolPath,
-	}, nil
+// OpenTofu installs the OpenTofu tool with the given version and return the path to the installed binary.
+// If the version is empty, the default version will be used.
+func (r *Registry) OpenTofu(ctx context.Context, version string) (string, error) {
+	return r.client.InstallTool(ctx, "tofu", cmp.Or(version, defaultOpenTofuVersion), installScript)
 }
