@@ -1,9 +1,24 @@
 apiVersion: pipecd.dev/v1beta1
 kind: Application
 spec:
-  input:
-    version: "1.6.0"
-    config: "main.tf"
-    workingDir: "."
-    env:
-      - TF_VAR_environment=test
+  name: opentofu-test-app
+  git:
+    repoID: test-repo
+    path: pkg/app/pipedv1/plugin/opentofu/deployment/testdata/simple
+    branch: main
+  kind: PLUGIN
+  plugins:
+    opentofu:
+      input:
+        version: "1.9.1"
+        config: "main.tf"
+        workingDir: "."
+        init: true
+  encryption:
+    encryptedSecrets:
+      awsAccessKeyId: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      awsSecretAccessKey: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    decryptionTargets:
+      - "credentials/aws"
+  description: |
+    OpenTofu application for infrastructure deployment.
