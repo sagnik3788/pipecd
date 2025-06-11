@@ -16,7 +16,30 @@ import (
 const (
 	stageOpenTofuPlan  = "OPEN_TOFU_PLAN"
 	stageOpenTofuApply = "OPEN_TOFU_APPLY"
+	planFileDir        = "/tmp/tofu-plans" // Shared directory for plan files
 )
+
+// getPlanFileMetadataPath returns the path to the metadata file for a deployment
+func getPlanFileMetadataPath(deploymentID string) string {
+	return filepath.Join(planFileDir, fmt.Sprintf("metadata_%s.json", deploymentID))
+}
+
+// savePlanFileMetadata saves the plan file path to a metadata file
+func savePlanFileMetadata(deploymentID, planFilePath string) error {
+	metadataPath := getPlanFileMetadataPath(deploymentID)
+	data := []byte(planFilePath)
+	return os.WriteFile(metadataPath, data, 0644)
+}
+
+// loadPlanFileMetadata loads the plan file path from a metadata file
+func loadPlanFileMetadata(deploymentID string) (string, error) {
+	metadataPath := getPlanFileMetadataPath(deploymentID)
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
 
 func determineVersions(input *sdk.DetermineVersionsInput[config.OpenTofuApplicationSpec]) (*sdk.DetermineVersionsResponse, error) {
 	// Extract version from the OpenTofu configuration
@@ -97,22 +120,110 @@ func fetchDefinedStages() []string {
 func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplicationSpec], appCfg *config.OpenTofuApplicationSpec) (sdk.StageStatus, error) {
 	logger := input.Logger
 
+	// Create the shared plan file directory if it doesn't exist
+	if err := os.MkdirAll(planFileDir, 0755); err != nil {
+		logger.Error("[PLUGIN] Failed to create plan file directory",
+			zap.String("dir", planFileDir),
+			zap.Error(err),
+		)
+		return sdk.StageStatusFailure, fmt.Errorf("failed to create plan file directory: %w", err)
+	}
+
+	// Log the stage configuration at the start
+	logger.Info("[PLUGIN] Starting stage execution",
+		zap.String("stageName", input.Request.StageName),
+		zap.String("stageConfig", string(input.Request.StageConfig)),
+		zap.Any("appConfig", appCfg),
+	)
+
+	// Validate app configuration
+	if appCfg == nil {
+		logger.Error("[PLUGIN] application configuration is nil")
+		return sdk.StageStatusFailure, fmt.Errorf("application configuration is nil")
+	}
+
+	// Get the working directory
+	workingDir := appCfg.Input.WorkingDir
+	if workingDir == "" {
+		workingDir = "."
+	}
+
+	// Get the absolute path by joining with the application directory
+	absWorkingDir := filepath.Join(input.Request.TargetDeploymentSource.ApplicationDirectory, workingDir)
+	logger.Info("[PLUGIN] Working directory information",
+		zap.String("workingDir", workingDir),
+		zap.String("absWorkingDir", absWorkingDir),
+		zap.String("configPath", appCfg.Input.Config),
+		zap.String("applicationDir", input.Request.TargetDeploymentSource.ApplicationDirectory),
+	)
+
+	// List files in working directory
+	files, err := os.ReadDir(absWorkingDir)
+	if err != nil {
+		logger.Error("[PLUGIN] Failed to read working directory",
+			zap.String("workingDir", absWorkingDir),
+			zap.Error(err),
+		)
+		return sdk.StageStatusFailure, fmt.Errorf("failed to read working directory: %w", err)
+	}
+
+	// Log all files in the directory
+	for _, f := range files {
+		logger.Info("[PLUGIN] File in working directory",
+			zap.String("name", f.Name()),
+			zap.Bool("isDir", f.IsDir()),
+		)
+	}
+
+	// Check if configuration file exists
+	configPath := filepath.Join(absWorkingDir, appCfg.Input.Config)
+	logger.Info("[PLUGIN] Checking for configuration file",
+		zap.String("configPath", configPath),
+	)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		logger.Error("[PLUGIN] Configuration file does not exist",
+			zap.String("configPath", configPath),
+			zap.Error(err),
+		)
+		return sdk.StageStatusFailure, fmt.Errorf("configuration file %s does not exist", configPath)
+	} else if err != nil {
+		logger.Error("[PLUGIN] Error checking configuration file",
+			zap.String("configPath", configPath),
+			zap.Error(err),
+		)
+		return sdk.StageStatusFailure, fmt.Errorf("error checking configuration file %s: %w", configPath, err)
+	} else {
+		logger.Info("[PLUGIN] Configuration file exists",
+			zap.String("configPath", configPath),
+		)
+		// Optionally, log the first few lines of the config file for confirmation
+		if content, err := os.ReadFile(configPath); err == nil {
+			maxLines := 10
+			lines := 0
+			for _, line := range splitLines(string(content)) {
+				if lines >= maxLines {
+					logger.Info("[PLUGIN] ... (truncated config file output)")
+					break
+				}
+				logger.Info("[PLUGIN] main.tf line", zap.String("line", line))
+				lines++
+			}
+		}
+	}
+
 	// Get the OpenTofu binary path from the tool registry
 	toolRegistry := toolregistry.NewRegistry(input.Client.ToolRegistry())
 	tofuPath, err := toolRegistry.OpenTofu(context.Background(), appCfg.Input.Version)
 	if err != nil {
-		logger.Error("failed to get OpenTofu binary", zap.Error(err))
+		logger.Error("Failed to get OpenTofu binary",
+			zap.Error(err),
+			zap.String("version", appCfg.Input.Version),
+		)
 		return sdk.StageStatusFailure, fmt.Errorf("failed to get OpenTofu binary: %w", err)
 	}
 
-	// Check if configuration file exists
-	configPath := filepath.Join(appCfg.Input.WorkingDir, appCfg.Input.Config)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return sdk.StageStatusFailure, fmt.Errorf("configuration file %s does not exist", configPath)
-	}
-
 	// Always run init to ensure proper dependency initialization
-	output, err := p.runTofuCommand(tofuPath, "init", appCfg)
+	output, err := p.runTofuCommand(tofuPath, "init", absWorkingDir, appCfg)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu init",
 			zap.Error(err),
@@ -121,31 +232,71 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 		return sdk.StageStatusFailure, fmt.Errorf("failed to execute OpenTofu init: %w", err)
 	}
 
+	// Define planFile with absolute path
+	planFileName := fmt.Sprintf("tfplan-%s", input.Request.Deployment.ApplicationID)
+	planFile := filepath.Join(planFileDir, planFileName)
+	logger.Info("[PLUGIN] Generated plan file path",
+		zap.String("planFile", planFile),
+		zap.String("stage", input.Request.StageName),
+	)
+
 	// Determine the command based on the stage name
 	var command string
 	var args []string
 	switch input.Request.StageName {
 	case stageOpenTofuPlan:
-		// Use a unique plan file name based on deployment ID
-		planFile := fmt.Sprintf("tfplan-%s", input.Request.Deployment.ApplicationID)
 		command = "plan"
 		args = []string{"-out=" + planFile}
+		logger.Info("[PLUGIN] Executing plan stage",
+			zap.String("planFile", planFile),
+			zap.String("workingDir", absWorkingDir),
+		)
+
 	case stageOpenTofuApply:
-		// Use the same plan file name as generated in plan stage
-		planFile := fmt.Sprintf("tfplan-%s", input.Request.Deployment.ApplicationID)
-		// Check if plan file exists
-		if _, err := os.Stat(filepath.Join(appCfg.Input.WorkingDir, planFile)); os.IsNotExist(err) {
-			return sdk.StageStatusFailure, fmt.Errorf("plan file %s does not exist, run plan first", planFile)
+		// Load the plan file path from metadata file
+		planFilePath, err := loadPlanFileMetadata(input.Request.Deployment.ID)
+		if err != nil {
+			logger.Error("[PLUGIN] Failed to load plan file metadata",
+				zap.Error(err),
+				zap.String("stage", input.Request.StageName),
+				zap.String("deploymentID", input.Request.Deployment.ID),
+			)
+			return sdk.StageStatusFailure, fmt.Errorf("failed to load plan file metadata: %w", err)
 		}
+
+		logger.Info("[PLUGIN] Retrieved plan file path from metadata file",
+			zap.String("planFilePath", planFilePath),
+			zap.String("stage", input.Request.StageName),
+			zap.String("deploymentID", input.Request.Deployment.ID),
+		)
+
+		// Validate plan file path
+		if planFilePath == "" {
+			logger.Error("[PLUGIN] Empty plan file path retrieved from metadata file",
+				zap.String("stage", input.Request.StageName),
+				zap.String("deploymentID", input.Request.Deployment.ID),
+			)
+			return sdk.StageStatusFailure, fmt.Errorf("empty plan file path retrieved from metadata file")
+		}
+
+		// Check if plan file exists
+		if _, err := os.Stat(planFilePath); os.IsNotExist(err) {
+			logger.Error("[PLUGIN] Plan file does not exist",
+				zap.String("planFilePath", planFilePath),
+				zap.Error(err),
+			)
+			return sdk.StageStatusFailure, fmt.Errorf("plan file %s does not exist, run plan first", planFilePath)
+		}
+
 		command = "apply"
-		args = []string{planFile}
+		args = []string{planFilePath}
 	default:
 		logger.Error("unknown stage", zap.String("stage", input.Request.StageName))
 		return sdk.StageStatusFailure, fmt.Errorf("unknown stage: %s", input.Request.StageName)
 	}
 
 	// Execute the OpenTofu command
-	output, err = p.runTofuCommand(tofuPath, command, appCfg, args...)
+	output, err = p.runTofuCommand(tofuPath, command, absWorkingDir, appCfg, args...)
 	if err != nil {
 		logger.Error("failed to execute OpenTofu command",
 			zap.String("command", command),
@@ -161,11 +312,42 @@ func (p *Plugin) executeStage(input *sdk.ExecuteStageInput[config.OpenTofuApplic
 		zap.String("output", output),
 	)
 
+	input.Logger.Info(fmt.Sprintf(
+		"Received ExecuteStage request. StageName=%s, StageConfig=%s",
+		input.Request.StageName,
+		string(input.Request.StageConfig),
+	))
+
+	// After PLAN, save the plan file path to metadata file
+	if input.Request.StageName == stageOpenTofuPlan {
+		logger.Info("[PLUGIN] Saving plan file path to metadata file",
+			zap.String("planFile", planFile),
+			zap.String("stage", input.Request.StageName),
+			zap.String("deploymentID", input.Request.Deployment.ID),
+		)
+
+		if err := savePlanFileMetadata(input.Request.Deployment.ID, planFile); err != nil {
+			logger.Error("[PLUGIN] Failed to save plan file metadata",
+				zap.Error(err),
+				zap.String("planFile", planFile),
+				zap.String("stage", input.Request.StageName),
+				zap.String("deploymentID", input.Request.Deployment.ID),
+			)
+			return sdk.StageStatusFailure, fmt.Errorf("failed to save plan file metadata: %w", err)
+		}
+
+		logger.Info("[PLUGIN] Successfully saved plan file path to metadata file",
+			zap.String("planFile", planFile),
+			zap.String("stage", input.Request.StageName),
+			zap.String("deploymentID", input.Request.Deployment.ID),
+		)
+	}
+
 	return sdk.StageStatusSuccess, nil
 }
 
 // runTofuCommand executes the tofu command for the given stage.
-func (p *Plugin) runTofuCommand(tofuPath string, command string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
+func (p *Plugin) runTofuCommand(tofuPath string, command string, workingDir string, spec *config.OpenTofuApplicationSpec, args ...string) (string, error) {
 	// Create command with context
 	cmd := exec.CommandContext(context.Background(), tofuPath, append([]string{command}, args...)...)
 
@@ -174,10 +356,8 @@ func (p *Plugin) runTofuCommand(tofuPath string, command string, spec *config.Op
 		cmd.Env = append(cmd.Env, spec.Input.Env...)
 	}
 
-	// Set working directory if specified
-	if spec.Input.WorkingDir != "" {
-		cmd.Dir = spec.Input.WorkingDir
-	}
+	// Set working directory to the absolute path
+	cmd.Dir = workingDir
 
 	// Execute the command and capture output
 	output, err := cmd.CombinedOutput()
@@ -186,4 +366,20 @@ func (p *Plugin) runTofuCommand(tofuPath string, command string, spec *config.Op
 	}
 
 	return string(output), nil
+}
+
+// Helper function to split file content into lines
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
 }

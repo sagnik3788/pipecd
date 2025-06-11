@@ -90,7 +90,7 @@ func (p Plugin) GetLivestate(ctx context.Context, _ *sdk.ConfigNone, deployTarge
 	}
 
 	// Copy OpenTofu configuration files from source to working directory
-	sourceDir := input.Request.DeploymentSource.ApplicationConfig.Spec.Input.Config
+	sourceDir := input.Request.DeploymentSource.ApplicationConfig.Spec.Input.WorkingDir
 	if err := copyDir(sourceDir, workDir); err != nil {
 		return nil, fmt.Errorf("failed to copy OpenTofu configuration files: %w", err)
 	}
@@ -213,6 +213,11 @@ func copyDir(src, dst string) error {
 	}
 
 	for _, entry := range entries {
+		// Skip hidden files and directories (those starting with a dot)
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
 
@@ -239,4 +244,41 @@ func copyDir(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+func (p *Plugin) ExecuteStage(
+	ctx context.Context,
+	_ *sdk.ConfigNone,
+	_ []*sdk.DeployTarget[config.OpenTofuDeployTargetConfig],
+	input *sdk.ExecuteStageInput[config.OpenTofuApplicationSpec],
+) (*sdk.ExecuteStageResponse, error) {
+	var spec config.OpenTofuApplicationSpec
+	if len(input.Request.StageConfig) > 0 {
+		if err := json.Unmarshal(input.Request.StageConfig, &spec); err != nil {
+			input.Logger.Info(fmt.Sprintf(
+				"Failed to decode application spec. stageConfig=%s, err=%v, spec=%+v",
+				string(input.Request.StageConfig), err, spec,
+			))
+			return nil, fmt.Errorf("failed to decode application spec: %w", err)
+		}
+	} else if input.Request.TargetDeploymentSource.ApplicationConfig != nil && input.Request.TargetDeploymentSource.ApplicationConfig.Spec != nil {
+		// Fallback to the full application spec from the deployment source
+		spec = *input.Request.TargetDeploymentSource.ApplicationConfig.Spec
+	} else {
+		return nil, fmt.Errorf("no application spec found in stage config or deployment source")
+	}
+
+	input.Logger.Info(fmt.Sprintf(
+		"Successfully decoded spec: %+v",
+		spec,
+	))
+
+	input.Logger.Info(fmt.Sprintf(
+		"Executing stage: %s",
+		input.Request.StageName,
+	))
+
+	return &sdk.ExecuteStageResponse{
+		Status: sdk.StageStatusSuccess,
+	}, nil
 }

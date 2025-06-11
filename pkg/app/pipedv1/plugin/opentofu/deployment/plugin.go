@@ -55,9 +55,30 @@ func (p *Plugin) ExecuteStage(
 	input *sdk.ExecuteStageInput[config.OpenTofuApplicationSpec],
 ) (*sdk.ExecuteStageResponse, error) {
 	var spec config.OpenTofuApplicationSpec
-	if err := json.Unmarshal(input.Request.StageConfig, &spec); err != nil {
-		return nil, fmt.Errorf("failed to decode application spec: %w", err)
+	if len(input.Request.StageConfig) > 0 {
+		if err := json.Unmarshal(input.Request.StageConfig, &spec); err != nil {
+			input.Logger.Info(fmt.Sprintf(
+				"Failed to decode application spec. stageConfig=%s, err=%v, spec=%+v",
+				string(input.Request.StageConfig), err, spec,
+			))
+			return nil, fmt.Errorf("failed to decode application spec: %w", err)
+		}
+	} else if input.Request.TargetDeploymentSource.ApplicationConfig != nil && input.Request.TargetDeploymentSource.ApplicationConfig.Spec != nil {
+		// Fallback to the full application spec from the deployment source
+		spec = *input.Request.TargetDeploymentSource.ApplicationConfig.Spec
+	} else {
+		return nil, fmt.Errorf("no application spec found in stage config or deployment source")
 	}
+
+	input.Logger.Info(fmt.Sprintf(
+		"Successfully decoded spec: %+v",
+		spec,
+	))
+
+	input.Logger.Info(fmt.Sprintf(
+		"Executing stage: %s",
+		input.Request.StageName,
+	))
 
 	status, err := p.executeStage(input, &spec)
 	if err != nil {
@@ -68,4 +89,3 @@ func (p *Plugin) ExecuteStage(
 		Status: status,
 	}, nil
 }
-
