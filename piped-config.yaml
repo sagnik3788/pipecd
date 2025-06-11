@@ -1,0 +1,33 @@
+apiVersion: pipecd.dev/v1beta1
+kind: Piped
+spec:
+  projectID: quickstart
+  pipedID: ac88568f-8113-4775-be93-d09570b7a0c9
+  pipedKeyData: NXpnamRvMndxaThqbWJyMTRiYmJ0bDc5dzl3aHRwZmtuNzg4cm8wbHk3c3AxYzY5ZGs=
+  apiAddress: localhost:8080
+
+  repositories:
+    - repoId: tofu-example
+      remote: https://github.com/sagnik3788/tofu-example
+      branch: main
+
+  syncInterval: 1m
+  
+  plugins:
+    - name: opentofu
+      url: file:///home/sangnik/.piped/plugins/opentofu
+      port: 5020
+      config:
+        version: "1.9.1"
+        credentials:
+          type: "github"
+          # secrets:
+          #   - name: "AWS_ACCESS_KEY_ID"
+          #     value: ""
+          #   - name: "AWS_SECRET_ACCESS_KEY"
+          #     value: ""
+      deployTargets:
+        - name: terraform-dev
+          type: terraform
+          config:
+            workingDir: .
